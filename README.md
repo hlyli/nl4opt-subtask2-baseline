@@ -25,6 +25,6 @@ LPWP accuracy: 65.
 
 [Branch](https://github.com/hlyli/nl4opt-subtask2-baseline/tree/T2T-DoubleSided)
 
-Much of the downside of the tabular method proposed in prior work was that it required a language model to understand and perform algebraic expressions to manipulate the LP into the form $\begin{bmatrix}A &\mid & b\end{bmatrix}$. This is not yet feasible on language models, hence we propose a simpler form $\begin{bmatrix} A_{\text{LHS}} & b_{\text{LHS}} & \mid & A_{\text{RHS}} & b_{\text{RHS}}\end{bmatrix}$, which does not require algebraic operations, and algebra is performed as a post-processing step. The [Text-to-Table](https://github.com/shirley-wu/text_to_table) model is used again for this.
+Much of the downside of the tabular method proposed in prior work was that it required a language model to understand and perform algebraic expressions to manipulate the LP into the form $[\ A \mid b \ ]$. This is not yet feasible on language models, hence we propose a simpler form $[\ A_{\text{LHS}} \  \ b_{\text{LHS}} \  \mid \  A_{\text{RHS}} \  \  b_{\text{RHS}} \ ]$, which does not require algebraic operations, and algebra is performed as a post-processing step. The [Text-to-Table](https://github.com/shirley-wu/text_to_table) model is used again for this.
 
 LPWP accuracy: 71.
