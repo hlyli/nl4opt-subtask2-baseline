@@ -13,6 +13,7 @@ def per_example_scores(predicted_objective: np.ndarray, predicted_constraints: n
     :return: false positives, false negatives, number of declarations in ground truth
     """
     # remove duplicate constraints
+    true_constraints = np.unique(true_constraints, axis=0)
     constraints = np.unique(predicted_constraints, axis=0)
 
     def obj_eq(a: np.ndarray, b: np.ndarray):
@@ -51,9 +52,27 @@ def overall_score(predicted_objectives: List[np.ndarray], predicted_constraints:
     """
     numerator = 0
     denominator = 0
+
+    wrong_num_var = 0
+    too_many_constraints = 0
+    too_few_constraints = 0
+    tot_fp = 0
     for p_obj, p_const, t_obj, t_const in zip(predicted_objectives, predicted_constraints,
                                               true_objectives, true_constraints):
         fp, fn, d = per_example_scores(p_obj, p_const, t_obj, t_const)
         numerator += fp + fn
         denominator += d
+        tot_fp += fp
+        if len(p_obj) != len(t_obj):
+            wrong_num_var +=1
+        if len(p_const) < len(t_const):
+            too_few_constraints +=1
+        if len(p_const) > len(t_const):
+            too_many_constraints +=1
+
+    print(f"wrong num var {wrong_num_var / len(predicted_objectives)}")
+    print(f"too many const {too_many_constraints/len(predicted_objectives)}")
+    print(f"too few const {too_few_constraints/len(predicted_objectives)}")
+    print(f"wrong parameters {tot_fp/denominator}")
+
     return 1 - numerator / denominator

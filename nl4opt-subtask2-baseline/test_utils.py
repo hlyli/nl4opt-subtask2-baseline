@@ -2,7 +2,6 @@
 import tqdm
 from torch.utils.data import DataLoader
 from utils import *
-from rouge import Rouge
 import test_utils
 
 import parsers
@@ -84,8 +83,6 @@ def evaluate(tokenizer,
                          desc='{} {}'.format(tqdm_descr, ckpt_basename))
     gold_outputs, pred_outputs, input_tokens, doc_ids, documents, order_mappings = [], [], [], [], [], []
     pred_texts, gold_texts, gold_pred_pairs = [], [], []
-    metric = Rouge()
-    measures = []
     for batch in DataLoader(dataset, batch_size=config.eval_batch_size,
                             shuffle=False, collate_fn=dataset.collate_fn):
         progress.update(1)
@@ -103,18 +100,14 @@ def evaluate(tokenizer,
         pred_txt, gold_txt = pred_txt[3:-4], gold_txt[3:-4]
         pred_texts.append(pred_txt)
         gold_texts.append(gold_txt)
-        diff_metrics = {}
-        measures.extend(diff_metrics)
 
         gold_pred_pairs.append({
             "gold": gold_txt,
             "pred": pred_txt,
             "document": batch.document[0],
-            "rouge": diff_metrics
         })
     progress.close()
     accuracy = collate_score_declarations(pred_texts, gold_texts,doc_ids,order_mappings, print_errors)
-    avg_metric = {}
 
     result = {
         'accuracy': accuracy,
@@ -126,7 +119,6 @@ def evaluate(tokenizer,
         'pred_texts': pred_texts,
         'gold_texts': gold_texts,
         'gold_pred_pairs': gold_pred_pairs,
-        'rouge': avg_metric
     }
 
     return result

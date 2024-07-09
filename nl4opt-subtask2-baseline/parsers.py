@@ -1,7 +1,7 @@
 import difflib
 import xml.etree.ElementTree as ET
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import OrderedDict
 import re
 import parsing_utils.constants as const
@@ -11,8 +11,14 @@ import logging
 from bs4 import BeautifulSoup
 import lxml
 import pdb
+import itertools
+import nltk
+import string
+
 
 # dataclass that stores each term in a declaration
+
+
 @dataclass
 class Term:
     # original name
@@ -21,6 +27,7 @@ class Term:
     index: int
     # the constant that multiplies the term
     value: float = None
+    value_str: str = ''
 
 
 @dataclass
@@ -49,6 +56,7 @@ class ConstraintDeclaration(Declaration):
     operator: str
     # using ordered dict here as order determines order of operations in balance control constraints
     terms: Dict[str, Term]
+    limit_str: str = ''
 
 
 @dataclass
@@ -57,12 +65,38 @@ class ProblemFormulation:
     constraints: List[ConstraintDeclaration]
     # order mapping mapping each entity to its index
     entities: Dict[str, int]
+    exceptions: List[Exception] = field(default_factory=list)
+
+    def num_exc_of_type(self, exc_type):
+        total = 0
+        for exc in self.exceptions:
+            if isinstance(exc, exc_type):
+                total += 1
+        return total
 
 
 @dataclass
 class CanonicalFormulation:
     objective: np.ndarray
     constraints: np.ndarray
+
+
+def preprocess_text(input_text, join=False):
+    wnl = nltk.stem.WordNetLemmatizer()
+
+    input_text = input_text.lower()
+    # input_text = input_text.translate(str.maketrans('', '', string.punctuation))
+    words = nltk.word_tokenize(input_text)
+    # words = [wnl.lemmatize(w) for w in words]
+
+    if join:
+        return " ".join(words)
+    else:
+        return words
+
+
+def preprocess_list_of_text(input_texts, join=False):
+    return [preprocess_text(x, join) for x in input_texts]
 
 
 def convert_to_canonical(formulation: ProblemFormulation) -> CanonicalFormulation:
@@ -123,6 +157,75 @@ def convert_to_canonical(formulation: ProblemFormulation) -> CanonicalFormulatio
         constraints.append(row)
 
     return CanonicalFormulation(objective, np.asarray(constraints))
+
+
+def convert_to_rdf(formulation: ProblemFormulation) -> list[str]:
+    statements = []
+
+    def append_statement(subject, predicate, obj):
+        assert isinstance(subject, str)
+        assert isinstance(predicate, str) or isinstance(predicate, (int, float, complex))
+        assert isinstance(obj, str) or isinstance(obj, (int, float, complex))
+
+        subject = preprocess_text(subject)
+        predicate = str(predicate)
+        predicate = preprocess_text(predicate) if predicate not in const.RDF_CONSTANTS else [predicate]
+        obj = str(obj)
+        obj = preprocess_text(obj) if obj not in const.RDF_CONSTANTS else [obj]
+
+        statements.append([*subject,
+                           const.RDF_DELIMITER,
+                           *predicate,
+                           const.RDF_DELIMITER,
+                           *obj,
+                           const.RDF_LINE_SEP])
+
+    def finish_declaration():
+        statements.append([const.RDF_DECLARATION_SEP])
+
+    # objective
+    append_statement(formulation.objective.name, const.RDF_OBJ_TYPE, formulation.objective.direction)
+    for term in formulation.objective.terms.values():
+        append_statement(formulation.objective.name, term.value_str, term.name)
+    finish_declaration()
+
+    # constraints
+    for constraint in formulation.constraints:
+        append_statement(constraint.direction, const.RDF_CONST_TYPE, constraint.type)
+        append_statement(constraint.direction, const.RDF_CONST_LIM, constraint.limit_str)
+        append_statement(constraint.direction, const.RDF_OPERATOR, constraint.operator)
+
+        if constraint.type == const.SUM_CONSTRAINT:
+            # nothing to be done for sum
+            pass
+        elif constraint.type == const.LOWER_BOUND or constraint.type == const.UPPER_BOUND:
+            for term in constraint.terms.values():
+                append_statement(constraint.direction, const.RDF_VAR, term.name)
+        elif constraint.type == const.LINEAR_CONSTRAINT:
+            for k, v in constraint.terms.items():
+                append_statement(constraint.direction, v.value_str, v.name)
+        elif constraint.type == const.RATIO_CONTROL_CONSTRAINT:
+            for term in constraint.terms.values():
+                append_statement(constraint.direction, const.RDF_VAR, term.name)
+        elif constraint.type == const.BALANCE_CONSTRAINT_1:
+            for term in constraint.terms.values():
+                # treat y as the one with an attached value
+                if term.value_str:
+                    append_statement(constraint.direction, term.value_str, term.name)
+                else:
+                    append_statement(constraint.direction, const.RDF_XBY_X, term.name)
+        elif constraint.type == const.BALANCE_CONSTRAINT_2:
+            # x <= y
+            for i, term in enumerate(constraint.terms.values()):
+                # y is first term
+                if i == 0:
+                    append_statement(constraint.direction, const.RDF_XBY_Y, term.name)
+                elif i == 1:
+                    append_statement(constraint.direction, const.RDF_XBY_X, term.name)
+
+        finish_declaration()
+
+    return list(itertools.chain(*statements))
 
 
 class Parser:
@@ -323,7 +426,7 @@ class ModelOutputXMLParser(Parser):
         return ConstraintDeclaration(direction=const_dir, limit=limit, operator=operator,
                                      type=const_type, terms=variables, entities=entities)
 
-    def parse_file(self, fname: str, order_mapping = None) -> Optional[ProblemFormulation]:
+    def parse_file(self, fname: str, order_mapping=None) -> Optional[ProblemFormulation]:
         with open(fname, 'r') as fd:
             data = fd.read()
             return self.parse(data, order_mapping)
@@ -352,12 +455,22 @@ class JSONFormulationParser(Parser):
             # cannot be parsed, returning an empty ProblemFormulation
             return ProblemFormulation(ObjectiveDeclaration('', {}, {}, ''), [], entities={})
 
+    def get_data(self, data: dict):
+        key = ''
+        for k, v in data.items():
+            data = v
+            key = k
+        return data
+
+    def get_text(self, data: dict):
+        return self.get_data(data)['document']
+
     def parse_objective(self, data: dict, vars: dict, order_mapping: dict) -> ObjectiveDeclaration:
         terms = {}
 
         if 'terms' in data:
             for i, (k, v) in enumerate(data['terms'].items()):
-                terms[k] = Term(name=k, index=order_mapping[k], value=self.parse_number(v))
+                terms[k] = Term(name=k, index=order_mapping[k], value=self.parse_number(v), value_str=v)
         else:
             # assume values are 1 if there is no terms mapping
             for var in vars:
@@ -370,14 +483,15 @@ class JSONFormulationParser(Parser):
 
     def parse_constraint(self, data: dict, entities: dict, var_dict: dict) -> ConstraintDeclaration:
         terms = OrderedDict()
-        limit = self.parse_number(data['limit']) if 'limit' in data else 0
+        limit_str = data['limit'] if 'limit' in data else '0'
+        limit = self.parse_number(limit_str)
         constraint_type = const.TYPE_DICT[data['type']]
         direction = self.parse_text(data['direction'])
         operator = self.parse_text(data['operator'])
 
         if 'terms' in data:
             for k, v in data['terms'].items():
-                terms[k] = Term(name=k, index=entities[k], value=self.parse_number(v))
+                terms[k] = Term(name=k, index=entities[k], value=self.parse_number(v), value_str=v)
         elif constraint_type == const.UPPER_BOUND or constraint_type == const.LOWER_BOUND or constraint_type == const.RATIO_CONTROL_CONSTRAINT:
             k = data['var']
             terms[k] = Term(name=k, index=entities[k])
@@ -386,7 +500,7 @@ class JSONFormulationParser(Parser):
             pass
         elif constraint_type == const.BALANCE_CONSTRAINT_1:
             k = data['y_var']
-            terms[k] = Term(name=k, index=entities[k], value=self.parse_number(data['param']))
+            terms[k] = Term(name=k, index=entities[k], value=self.parse_number(data['param']), value_str=data['param'])
             k = data['x_var']
             terms[k] = Term(name=k, index=entities[k])
         elif constraint_type == const.BALANCE_CONSTRAINT_2:
@@ -402,4 +516,196 @@ class JSONFormulationParser(Parser):
                                      operator=operator,
                                      entities=entities,
                                      limit=limit,
-                                     terms=terms)
+                                     terms=terms,
+                                     limit_str=limit_str)
+
+
+class RDFParser(Parser):
+    def parse(self, data: object, order_mapping: Optional[dict] = None) -> ProblemFormulation:
+        if isinstance(data, str):
+            # slice to -1 because last index is a \n
+            declarations = data.split(const.RDF_DECLARATION_SEP)[:-1]
+            objective = None
+            constraints = []
+            exceptions = []
+            for declaration in declarations:
+                dec_lines = declaration.split(const.RDF_LINE_SEP)[:-1]
+                dec_lines = [x.split(const.RDF_DELIMITER) for x in dec_lines]
+                dec_lines = [[x.strip() for x in y] for y in dec_lines]
+                old_len_lines = len(dec_lines)
+                dec_lines = [x for x in dec_lines if len(x) == 3]
+                new_len_lines = len(dec_lines)
+
+                if self.is_objective(dec_lines):
+                    try:
+                        if old_len_lines > new_len_lines:
+                            exceptions.append(ObjectiveNotTriple('Not RDF Triple'))
+                        objective = self.parse_objective(dec_lines, order_mapping)
+                    except Exception as e:
+                        exceptions.append(e)
+                else:
+                    try:
+                        if old_len_lines > new_len_lines:
+                            exceptions.append(ConstraintNotTriple('Not RDF Triple'))
+                        constraints.append(self.parse_constraint(dec_lines, order_mapping))
+                    except Exception as e:
+                        exceptions.append(e)
+
+            return ProblemFormulation(objective, constraints, order_mapping, exceptions)
+
+    def parse_objective(self, data: list[list[str]], order_mapping: dict):
+        objective_name = ''
+        objective_direction = ''
+        terms = {}
+        for line in data:
+            if line[1] == const.RDF_OBJ_TYPE:
+                objective_name = line[0]
+                objective_direction = line[2]
+            else:
+                term_name = line[2]
+                term_value = line[1]
+                if term_value == '':
+                    term_value = '1'
+                term_name = self.parse_entity(term_name, order_mapping)
+                terms[term_name] = Term(
+                    term_name,
+                    order_mapping[term_name],
+                    self.parse_number(term_value),
+                    term_value
+                )
+        return ObjectiveDeclaration(objective_direction, terms, order_mapping, objective_name)
+
+    def parse_constraint(self, data: list[list[str]], order_mapping: dict):
+        constraint_direction = ''
+        constraint_type = ''
+        constraint_limit = ''
+        operator = ''
+        terms = None
+
+        for line in data:
+            if line[1] == const.RDF_CONST_TYPE:
+                constraint_type = line[2]
+                constraint_direction = line[0]
+            elif line[1] == const.RDF_CONST_LIM:
+                constraint_limit = line[2]
+            elif line[1] == const.RDF_OPERATOR:
+                operator = line[2]
+
+        if constraint_type == const.SUM_CONSTRAINT:
+            terms = OrderedDict()
+        elif constraint_type == const.LOWER_BOUND or constraint_type == const.UPPER_BOUND:
+            terms = self.parse_constraint_terms(data, order_mapping, None)
+        elif constraint_type == const.LINEAR_CONSTRAINT:
+            terms = self.parse_constraint_terms(data, order_mapping, 1)
+        elif constraint_type == const.RATIO_CONTROL_CONSTRAINT:
+            terms = self.parse_constraint_terms(data, order_mapping, 1)
+        elif constraint_type == const.BALANCE_CONSTRAINT_1 or constraint_type == const.BALANCE_CONSTRAINT_2:
+            terms = self.parse_constraint_terms_xby(data, order_mapping)
+        else:
+            raise UnidentifiedDeclarationException(f'Constraint type {constraint_type} not valid')
+
+        return ConstraintDeclaration(direction=constraint_direction,
+                                     terms=terms,
+                                     entities=order_mapping,
+                                     type=constraint_type,
+                                     operator=operator,
+                                     limit=self.parse_number(constraint_limit),
+                                     limit_str=constraint_limit)
+
+    def parse_constraint_terms(self, data, order_mapping, value_idx=None):
+        terms = OrderedDict()
+        for line in data:
+            if line[1] in [const.RDF_CONST_TYPE, const.RDF_CONST_LIM, const.RDF_OPERATOR]:
+                continue
+            else:
+                term_name = line[2]
+                if value_idx is not None:
+                    term_value = line[1]
+                    if term_value == const.RDF_VAR:
+                        term_value = '1'
+                    parsed_value = self.parse_number(term_value)
+                else:
+                    term_value = ''
+                    parsed_value = None
+
+                term_name = self.parse_entity(term_name, order_mapping)
+                terms[term_name] = Term(
+                    term_name,
+                    order_mapping[term_name],
+                    parsed_value,
+                    term_value
+                )
+        return terms
+
+    def parse_constraint_terms_xby(self, data, order_mapping):
+        terms = OrderedDict()
+        for line in data:
+            if line[1] in [const.RDF_CONST_TYPE, const.RDF_CONST_LIM, const.RDF_OPERATOR]:
+                continue
+            else:
+                term_name = line[2]
+                term_value = line[1]
+                if term_value == 'var':
+                    term_value = '1'
+                if term_value == const.RDF_XBY_Y:
+                    term_name = self.parse_entity(term_name, order_mapping)
+                    terms[term_name] = Term(
+                        term_name,
+                        order_mapping[term_name]
+                    )
+                    terms.move_to_end(term_name, last=False)
+                elif term_value == const.RDF_XBY_X:
+                    term_name = self.parse_entity(term_name, order_mapping)
+                    terms[term_name] = Term(
+                        term_name,
+                        order_mapping[term_name]
+                    )
+                else:
+                    term_name = self.parse_entity(term_name, order_mapping)
+                    terms[term_name] = Term(
+                        term_name,
+                        order_mapping[term_name],
+                        self.parse_number(term_value),
+                        term_value
+                    )
+                    terms.move_to_end(term_name, last=False)
+        return terms
+
+    def is_constraint(self, data: list[list[str]]):
+        for line in data:
+            if line[1] == const.RDF_CONST_TYPE:
+                return True
+            elif line[1] == const.RDF_OBJ_TYPE:
+                return False
+
+        raise UnidentifiedDeclarationException("Declaration is neither a constraint nor objective")
+
+    def is_objective(self, data: list[list[str]]):
+        return not self.is_constraint(data)
+
+    def find_direction(self, data: list[list[str]]):
+        return data[0][0]
+
+
+class LimitNotFoundException(Exception):
+    pass
+
+
+class WrongDeclarationTypeException(Exception):
+    pass
+
+
+class UnidentifiedDeclarationException(Exception):
+    pass
+
+
+class SyntaxErrorException(Exception):
+    pass
+
+
+class ObjectiveNotTriple(Exception):
+    pass
+
+
+class ConstraintNotTriple(Exception):
+    pass

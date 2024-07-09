@@ -1,0 +1,6 @@
+*.xml
+.idea
+**/checkpoints*
+**/__pycache__
+**/tokenizer
+#*.rdf

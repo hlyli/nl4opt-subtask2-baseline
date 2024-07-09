@@ -36,3 +36,29 @@ NUMS_DICT = {
     'twice': 2,
     'thrice': 3
 }
+
+RDF_OBJ_TYPE = 'objective_type'
+RDF_CONST_LIM = 'constraint_limit'
+RDF_CONST_TYPE = 'constraint_type'
+RDF_VAR = 'var'
+RDF_DECLARATION_SEP = '[DEC_SEP]'
+RDF_LINE_SEP = '[LINE_SEP]'
+RDF_XBY_X = 'xby_x'
+RDF_XBY_Y = 'xby_y'
+RDF_DELIMITER = '[RDF_DEL]'
+RDF_OPERATOR = '[OPERATOR]'
+
+RDF_CONSTANTS = [
+    RDF_OBJ_TYPE,
+    RDF_CONST_LIM,
+    RDF_CONST_TYPE,
+    RDF_VAR, RDF_DECLARATION_SEP,
+    RDF_LINE_SEP,
+    RDF_XBY_X,
+    RDF_XBY_Y,
+    RDF_DELIMITER,
+    RDF_OPERATOR,
+    LT,
+    GT,
+    *TYPE_DICT.values()
+]
